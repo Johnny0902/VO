@@ -1,138 +1,75 @@
+import cv2
 import numpy as np
 
-def quantize_value(sl, sw, pl, pw):
-  x1 = 0
-  x2 = 0
-  x3 = 0
-  x4 = 0
+# Initialize ORB detector
+orb = cv2.ORB_create()
 
-  if sl < 5.5:
-      x1 = 0
-  elif 5.5 < sl < 6.5:
-      x1 = 1
-  elif 6.5 < sl:
-      x1 = 2
+# Initialize brute-force matcher
+bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
-  if sw < 2.8:
-      x2 = 0
-  elif 2.8 < sw < 3.3:
-      x2 = 1
-  elif 3.3 < sw:
-      x2 = 2 
+# Initialize camera matrix (replace with your camera's intrinsic parameters)
+# The focal length (fx, fy) and principal point (cx, cy) can be obtained from camera calibration
+fx = 500  # Focal length in pixels
+fy = 500
+cx = 320  # Principal point in pixels
+cy = 240
 
-  if pl < 2.0:
-      x3 = 0
-  elif 2.0 < pl < 5.0:
-      x3 = 1
-  elif 5.0 < pl:
-      x3 = 2
+K = np.array([[fx, 0, cx],
+              [0, fy, cy],
+              [0, 0, 1]])
 
-  if pw < 0.7:
-      x4 = 0
-  elif 0.7 < pw < 1.7:
-      x4 = 1
-  elif 1.7 < pw:
-      x4 = 2
+# Function to estimate camera motion between two frames
+def estimate_camera_motion(prev_img, curr_img):
+    # Convert images to grayscale
+    prev_gray = cv2.cvtColor(prev_img, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(curr_img, cv2.COLOR_BGR2GRAY)
 
-  return x1, x2, x3, x4
+    # Find key points and descriptors in both frames
+    prev_kps, prev_desc = orb.detectAndCompute(prev_gray, None)
+    curr_kps, curr_desc = orb.detectAndCompute(curr_gray, None)
 
-def single_neuron(x1, x2, x3, x4):
-  S1 = -x1 +x2 -x4
-  S2 = 2*x1 + x2 +x3
-  S3 = x3 + x4
-  S4 = -x1 - x2 - x3 - x4
-  
-  if S1 >= 1:
-    S1 = 1
-  else:
-    S1 = 0
-    
-  if S2 >= 5:
-    S2 = 1
-  else:
-    S2 = 0
+    # Match descriptors using the brute-force matcher
+    matches = bf.match(prev_desc, curr_desc)
 
-  if S3 >= 2:
-    S3 = 1
-  else:
-    S3 = 0
-    
-  if S4 >= 1:
-    S4 = 1
-  else:
-    S4 = 0
+    # Extract matched key points
+    prev_matched_kps = np.array([prev_kps[match.queryIdx].pt for match in matches]).reshape(-1, 1, 2)
+    curr_matched_kps = np.array([curr_kps[match.trainIdx].pt for match in matches]).reshape(-1, 1, 2)
 
-  return S1, S2, S3, S4
+    # Compute the essential matrix using RANSAC
+    E, _ = cv2.findEssentialMat(curr_matched_kps, prev_matched_kps, K)
 
-def layer_two(S1, S2, S3, S4):
-  S5 = 2*S1 + S2 - 2*S3 + S4
-  S6 = -2*S1 - S2 + S3
-  S7 = S1 + S2 + S3 - 2*S4
+    # Recover the camera's rotation and translation from the essential matrix
+    _, R, t, _ = cv2.recoverPose(E, curr_matched_kps, prev_matched_kps, K)
 
-  X = [0, 0, 0] 
-  
-  if S5 >= 2:
-    X[0] = 1
-  else:
-    X[0] = 0
+    return R, t
 
-  if S6 >= 1:
-    X[1] = 1
-  else:
-    X[1] = 0
+# Test the visual odometry algorithm
+def main():
+    cap = cv2.VideoCapture(0)
 
-  if S7 >= 2:
-    X[2] = 1
-  else:
-    X[2] = 0
+    prev_frame = None
 
-  return X
+    while True:
+        ret, frame = cap.read()
 
-def identify_iris(X):
-  if X == [1, 0, 0]:
-      return "Iris-setosa"
-  elif X == [0, 1, 0]:
-      return "Iris-versicolor"
-  elif X == [0, 0, 1]:
-      return "Iris-virginica"
+        if not ret:
+            break
 
+        if prev_frame is not None:
+            R, t = estimate_camera_motion(prev_frame, frame)
 
-correct_count = 0 
-data = []
+            # Print the camera's translation and rotation
+            print("Translation:", t.ravel())
+            print("Rotation:\n", R)
 
-#(filename, letter according to file type)
-with open('iris.txt', 'r') as file:
-  lines = file.readlines() #read all content
+        prev_frame = frame.copy()
 
-data = np.array(data) #initialization
+        cv2.imshow("Frame", frame)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
 
-for line in lines:
-  line = line.strip()#read by line
-  if line:
-    data = line.split(",")#被逗号分开的value，4个的统称
-    
-    values = [value.strip('"') for value in data[:4]]
-    #create empty string(container) for values to go in, first 4
-    
-    if all(values):
-      sl, sw, pl, pw = [float(value) for value in values]
-      
-      actual_answer = data[4]
+    cap.release()
+    cv2.destroyAllWindows()
 
-      x1, x2, x3, x4 = quantize_value(sl, sw, pl, pw)
-      
-      S1, S2, S3, S4 = single_neuron(x1, x2, x3, x4)
-      
-      X = layer_two(S1, S2, S3, S4)
-      
-      predicted_result = identify_iris(X)
-      
-      if predicted_result == actual_answer:
-        correct_count += 1
-
-total_count = len(lines)
-accuracy = correct_count / total_count
-
-print(total_count)
-print(correct_count)
-print("Accuracy:", accuracy)
+if __name__ == "__main__":
+    main()
